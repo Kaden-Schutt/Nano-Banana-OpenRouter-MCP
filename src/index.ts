@@ -225,7 +225,7 @@ class NanoBananaMCP {
         messages: [
           { role: "user", content: prompt }
         ],
-        modalities: ["text", "image"],
+        modalities: ["image", "text"],
       } as any);
       
       // Process response to extract image data
@@ -425,7 +425,7 @@ class NanoBananaMCP {
             content: contentParts
           }
         ],
-        modalities: ["text", "image"],
+        modalities: ["image", "text"],
       } as any);
       
       // Process response
