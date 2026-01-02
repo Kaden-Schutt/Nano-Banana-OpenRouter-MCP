@@ -11,7 +11,7 @@ import {
   ErrorCode,
   McpError,
 } from "@modelcontextprotocol/sdk/types.js";
-import { GoogleGenAI } from "@google/genai";
+import { OpenRouter } from "@openrouter/sdk";
 import { z } from "zod";
 import fs from "fs/promises";
 import path from "path";
@@ -22,14 +22,14 @@ import os from "os";
 dotenvConfig();
 
 const ConfigSchema = z.object({
-  geminiApiKey: z.string().min(1, "Gemini API key is required"),
+  openRouterApiKey: z.string().min(1, "OpenRouter API key is required"),
 });
 
 type Config = z.infer<typeof ConfigSchema>;
 
 class NanoBananaMCP {
   private server: Server;
-  private genAI: GoogleGenAI | null = null;
+  private openRouter: OpenRouter | null = null;
   private config: Config | null = null;
   private lastImagePath: string | null = null;
   private configSource: 'environment' | 'config_file' | 'not_configured' = 'not_configured';
@@ -55,14 +55,14 @@ class NanoBananaMCP {
       return {
         tools: [
           {
-            name: "configure_gemini_token",
-            description: "Configure your Gemini API token for nano-banana image generation",
+            name: "configure_openrouter_token",
+            description: "Configure your OpenRouter API token for nano-banana image generation",
             inputSchema: {
               type: "object",
               properties: {
                 apiKey: {
                   type: "string",
-                  description: "Your Gemini API key from Google AI Studio",
+                  description: "Your OpenRouter API key from openrouter.ai/settings/keys",
                 },
               },
               required: ["apiKey"],
@@ -109,7 +109,7 @@ class NanoBananaMCP {
           },
           {
             name: "get_configuration_status",
-            description: "Check if Gemini API token is configured",
+            description: "Check if OpenRouter API token is configured",
             inputSchema: {
               type: "object",
               properties: {},
@@ -153,8 +153,8 @@ class NanoBananaMCP {
     this.server.setRequestHandler(CallToolRequestSchema, async (request: CallToolRequest): Promise<CallToolResult> => {
       try {
         switch (request.params.name) {
-          case "configure_gemini_token":
-            return await this.configureGeminiToken(request);
+          case "configure_openrouter_token":
+            return await this.configureOpenRouterToken(request);
           
           case "generate_image":
             return await this.generateImage(request);
@@ -183,14 +183,14 @@ class NanoBananaMCP {
     });
   }
 
-  private async configureGeminiToken(request: CallToolRequest): Promise<CallToolResult> {
+  private async configureOpenRouterToken(request: CallToolRequest): Promise<CallToolResult> {
     const { apiKey } = request.params.arguments as { apiKey: string };
     
     try {
-      ConfigSchema.parse({ geminiApiKey: apiKey });
+      ConfigSchema.parse({ openRouterApiKey: apiKey });
       
-      this.config = { geminiApiKey: apiKey };
-      this.genAI = new GoogleGenAI({ apiKey });
+      this.config = { openRouterApiKey: apiKey };
+      this.openRouter = new OpenRouter({ apiKey });
       this.configSource = 'config_file'; // Manual configuration via tool
       
       await this.saveConfig();
@@ -199,7 +199,7 @@ class NanoBananaMCP {
         content: [
           {
             type: "text",
-            text: "✅ Gemini API token configured successfully! You can now use nano-banana image generation features.",
+            text: "✅ OpenRouter API token configured successfully! You can now use nano-banana image generation features.",
           },
         ],
       };
@@ -213,16 +213,20 @@ class NanoBananaMCP {
 
   private async generateImage(request: CallToolRequest): Promise<CallToolResult> {
     if (!this.ensureConfigured()) {
-      throw new McpError(ErrorCode.InvalidRequest, "Gemini API token not configured. Use configure_gemini_token first.");
+      throw new McpError(ErrorCode.InvalidRequest, "OpenRouter API token not configured. Use configure_openrouter_token first.");
     }
 
     const { prompt } = request.params.arguments as { prompt: string };
     
     try {
-      const response = await this.genAI!.models.generateContent({
-        model: "gemini-2.5-flash-image-preview",
-        contents: prompt,
-      });
+      // Use type assertion for modalities since SDK types don't include it yet
+      const response = await this.openRouter!.chat.send({
+        model: "google/gemini-3-pro-image-preview",
+        messages: [
+          { role: "user", content: prompt }
+        ],
+        modalities: ["text", "image"],
+      } as any);
       
       // Process response to extract image data
       const content: any[] = [];
@@ -235,21 +239,29 @@ class NanoBananaMCP {
       // Create directory
       await fs.mkdir(imagesDir, { recursive: true, mode: 0o755 });
       
-      if (response.candidates && response.candidates[0]?.content?.parts) {
-        for (const part of response.candidates[0].content.parts) {
-          // Process text content
-          if (part.text) {
-            textContent += part.text;
-          }
-          
-          // Process image data
-          if (part.inlineData?.data) {
+      // Extract text content from response
+      const message = response.choices?.[0]?.message;
+      if (message?.content && typeof message.content === "string") {
+        textContent = message.content;
+      }
+      
+      // Extract images from response (OpenRouter returns base64 data URLs)
+      const images = (message as any)?.images as string[] | undefined;
+      if (images && images.length > 0) {
+        for (const imageDataUrl of images) {
+          // Parse data URL: data:image/png;base64,<data>
+          const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            const mimeType = match[1];
+            const base64Data = match[2];
+            
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const randomId = Math.random().toString(36).substring(2, 8);
-            const fileName = `generated-${timestamp}-${randomId}.png`;
+            const ext = mimeType === "image/png" ? "png" : mimeType === "image/jpeg" ? "jpg" : "png";
+            const fileName = `generated-${timestamp}-${randomId}.${ext}`;
             const filePath = path.join(imagesDir, fileName);
             
-            const imageBuffer = Buffer.from(part.inlineData.data, 'base64');
+            const imageBuffer = Buffer.from(base64Data, 'base64');
             await fs.writeFile(filePath, imageBuffer);
             savedFiles.push(filePath);
             this.lastImagePath = filePath;
@@ -257,15 +269,15 @@ class NanoBananaMCP {
             // Add image to MCP response
             content.push({
               type: "image",
-              data: part.inlineData.data,
-              mimeType: part.inlineData.mimeType || "image/png",
+              data: base64Data,
+              mimeType: mimeType,
             });
           }
         }
       }
       
       // Build response content
-      let statusText = `🎨 Image generated with nano-banana (Gemini 2.5 Flash Image)!\n\nPrompt: "${prompt}"`;
+      let statusText = `🎨 Image generated with nano-banana (Gemini 3 Pro Image via OpenRouter)!\n\nPrompt: "${prompt}"`;
       
       if (textContent) {
         statusText += `\n\nDescription: ${textContent}`;
@@ -302,7 +314,7 @@ class NanoBananaMCP {
 
   private async editImage(request: CallToolRequest): Promise<CallToolResult> {
     if (!this.ensureConfigured()) {
-      throw new McpError(ErrorCode.InvalidRequest, "Gemini API token not configured. Use configure_gemini_token first.");
+      throw new McpError(ErrorCode.InvalidRequest, "OpenRouter API token not configured. Use configure_openrouter_token first.");
     }
 
     const { imagePath, prompt, referenceImages } = request.params.arguments as { 
@@ -317,13 +329,14 @@ class NanoBananaMCP {
       const mimeType = this.getMimeType(imagePath);
       const imageBase64 = imageBuffer.toString('base64');
       
-      // Prepare all image parts
-      const imageParts: any[] = [
+      // Build content array with text first, then images (as recommended by OpenRouter)
+      const contentParts: any[] = [
+        { type: "text", text: prompt },
         { 
-          inlineData: {
-            data: imageBase64,
-            mimeType: mimeType,
-          }
+          type: "image_url", 
+          image_url: { 
+            url: `data:${mimeType};base64,${imageBase64}` 
+          } 
         }
       ];
       
@@ -335,10 +348,10 @@ class NanoBananaMCP {
             const refMimeType = this.getMimeType(refPath);
             const refBase64 = refBuffer.toString('base64');
             
-            imageParts.push({
-              inlineData: {
-                data: refBase64,
-                mimeType: refMimeType,
+            contentParts.push({
+              type: "image_url",
+              image_url: {
+                url: `data:${refMimeType};base64,${refBase64}`
               }
             });
           } catch (error) {
@@ -348,18 +361,17 @@ class NanoBananaMCP {
         }
       }
       
-      // Add the text prompt
-      imageParts.push({ text: prompt });
-      
-      // Use new API format with multiple images and text
-      const response = await this.genAI!.models.generateContent({
-        model: "gemini-2.5-flash-image-preview",
-        contents: [
+      // Use OpenRouter API format with type assertion for modalities
+      const response = await this.openRouter!.chat.send({
+        model: "google/gemini-3-pro-image-preview",
+        messages: [
           {
-            parts: imageParts
+            role: "user",
+            content: contentParts
           }
         ],
-      });
+        modalities: ["text", "image"],
+      } as any);
       
       // Process response
       const content: any[] = [];
@@ -370,41 +382,45 @@ class NanoBananaMCP {
       const imagesDir = this.getImagesDirectory();
       await fs.mkdir(imagesDir, { recursive: true, mode: 0o755 });
       
-      // Extract image from response
-      if (response.candidates && response.candidates[0]?.content?.parts) {
-        for (const part of response.candidates[0].content.parts) {
-          if (part.text) {
-            textContent += part.text;
-          }
-          
-          if (part.inlineData) {
-            // Save edited image
+      // Extract text content from response
+      const message = response.choices?.[0]?.message;
+      if (message?.content && typeof message.content === "string") {
+        textContent = message.content;
+      }
+      
+      // Extract images from response (OpenRouter returns base64 data URLs)
+      const images = (message as any)?.images as string[] | undefined;
+      if (images && images.length > 0) {
+        for (const imageDataUrl of images) {
+          // Parse data URL: data:image/png;base64,<data>
+          const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+          if (match) {
+            const imgMimeType = match[1];
+            const base64Data = match[2];
+            
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const randomId = Math.random().toString(36).substring(2, 8);
-            const fileName = `edited-${timestamp}-${randomId}.png`;
+            const ext = imgMimeType === "image/png" ? "png" : imgMimeType === "image/jpeg" ? "jpg" : "png";
+            const fileName = `edited-${timestamp}-${randomId}.${ext}`;
             const filePath = path.join(imagesDir, fileName);
             
-            if (part.inlineData.data) {
-              const imageBuffer = Buffer.from(part.inlineData.data, 'base64');
-              await fs.writeFile(filePath, imageBuffer);
-              savedFiles.push(filePath);
-              this.lastImagePath = filePath;
-            }
+            const imgBuffer = Buffer.from(base64Data, 'base64');
+            await fs.writeFile(filePath, imgBuffer);
+            savedFiles.push(filePath);
+            this.lastImagePath = filePath;
             
             // Add to MCP response
-            if (part.inlineData.data) {
-              content.push({
-                type: "image",
-                data: part.inlineData.data,
-                mimeType: part.inlineData.mimeType || "image/png",
-              });
-            }
+            content.push({
+              type: "image",
+              data: base64Data,
+              mimeType: imgMimeType,
+            });
           }
         }
       }
       
       // Build response
-      let statusText = `🎨 Image edited with nano-banana!\n\nOriginal: ${imagePath}\nEdit prompt: "${prompt}"`;
+      let statusText = `🎨 Image edited with nano-banana (Gemini 3 Pro via OpenRouter)!\n\nOriginal: ${imagePath}\nEdit prompt: "${prompt}"`;
       
       if (referenceImages && referenceImages.length > 0) {
         statusText += `\n\nReference images used:\n${referenceImages.map(f => `- ${f}`).join('\n')}`;
@@ -442,33 +458,35 @@ class NanoBananaMCP {
   }
 
   private async getConfigurationStatus(): Promise<CallToolResult> {
-    const isConfigured = this.config !== null && this.genAI !== null;
+    const isConfigured = this.config !== null && this.openRouter !== null;
     
     let statusText: string;
     let sourceInfo = "";
     
     if (isConfigured) {
-      statusText = "✅ Gemini API token is configured and ready to use";
+      statusText = "✅ OpenRouter API token is configured and ready to use";
       
       switch (this.configSource) {
         case 'environment':
-          sourceInfo = "\n📍 Source: Environment variable (GEMINI_API_KEY)\n💡 This is the most secure configuration method.";
+          sourceInfo = "\n📍 Source: Environment variable (OPENROUTER_API_KEY)\n💡 This is the most secure configuration method.";
           break;
         case 'config_file':
           sourceInfo = "\n📍 Source: Local configuration file (.nano-banana-config.json)\n💡 Consider using environment variables for better security.";
           break;
       }
     } else {
-      statusText = "❌ Gemini API token is not configured";
+      statusText = "❌ OpenRouter API token is not configured";
       sourceInfo = `
 
 📝 Configuration options (in priority order):
 1. 🥇 MCP client environment variables (Recommended)
-2. 🥈 System environment variable: GEMINI_API_KEY  
-3. 🥉 Use configure_gemini_token tool
+2. 🥈 System environment variable: OPENROUTER_API_KEY  
+3. 🥉 Use configure_openrouter_token tool
 
 💡 For the most secure setup, add this to your MCP configuration:
-"env": { "GEMINI_API_KEY": "your-api-key-here" }`;
+"env": { "OPENROUTER_API_KEY": "your-api-key-here" }
+
+Get your API key from: https://openrouter.ai/settings/keys`;
     }
     
     return {
@@ -483,7 +501,7 @@ class NanoBananaMCP {
 
   private async continueEditing(request: CallToolRequest): Promise<CallToolResult> {
     if (!this.ensureConfigured()) {
-      throw new McpError(ErrorCode.InvalidRequest, "Gemini API token not configured. Use configure_gemini_token first.");
+      throw new McpError(ErrorCode.InvalidRequest, "OpenRouter API token not configured. Use configure_openrouter_token first.");
     }
 
     if (!this.lastImagePath) {
@@ -555,7 +573,7 @@ class NanoBananaMCP {
   }
 
   private ensureConfigured(): boolean {
-    return this.config !== null && this.genAI !== null;
+    return this.config !== null && this.openRouter !== null;
   }
 
   private getMimeType(filePath: string): string {
@@ -603,11 +621,11 @@ class NanoBananaMCP {
 
   private async loadConfig(): Promise<void> {
     // Try to load from environment variable first
-    const envApiKey = process.env.GEMINI_API_KEY;
+    const envApiKey = process.env.OPENROUTER_API_KEY;
     if (envApiKey) {
       try {
-        this.config = ConfigSchema.parse({ geminiApiKey: envApiKey });
-        this.genAI = new GoogleGenAI({ apiKey: this.config.geminiApiKey });
+        this.config = ConfigSchema.parse({ openRouterApiKey: envApiKey });
+        this.openRouter = new OpenRouter({ apiKey: this.config.openRouterApiKey });
         this.configSource = 'environment';
         return;
       } catch (error) {
@@ -622,7 +640,7 @@ class NanoBananaMCP {
       const parsedConfig = JSON.parse(configData);
       
       this.config = ConfigSchema.parse(parsedConfig);
-      this.genAI = new GoogleGenAI({ apiKey: this.config.geminiApiKey });
+      this.openRouter = new OpenRouter({ apiKey: this.config.openRouterApiKey });
       this.configSource = 'config_file';
     } catch {
       // Config file doesn't exist or is invalid, that's okay
