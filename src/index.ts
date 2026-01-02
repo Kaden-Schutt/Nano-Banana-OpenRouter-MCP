@@ -217,16 +217,32 @@ class NanoBananaMCP {
     }
 
     const { prompt } = request.params.arguments as { prompt: string };
-    
+
     try {
-      // Use type assertion for modalities since SDK types don't include it yet
-      const response = await this.openRouter!.chat.send({
-        model: "google/gemini-3-pro-image-preview",
-        messages: [
-          { role: "user", content: prompt }
-        ],
-        modalities: ["image", "text"],
-      } as any);
+      // Use raw fetch to ensure modalities parameter is sent correctly
+      const fetchResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.config!.openRouterApiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://github.com/Kaden-Schutt/Nano-Banana-OpenRouter-MCP",
+          "X-Title": "Nano-Banana-OpenRouter-MCP",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-3-pro-image-preview",
+          messages: [
+            { role: "user", content: prompt }
+          ],
+          modalities: ["image", "text"],
+        }),
+      });
+
+      if (!fetchResponse.ok) {
+        const errorText = await fetchResponse.text();
+        throw new Error(`OpenRouter API error: ${fetchResponse.status} - ${errorText}`);
+      }
+
+      const response = await fetchResponse.json() as any;
       
       // Process response to extract image data
       const content: any[] = [];
@@ -416,17 +432,33 @@ class NanoBananaMCP {
         }
       }
       
-      // Use OpenRouter API format with type assertion for modalities
-      const response = await this.openRouter!.chat.send({
-        model: "google/gemini-3-pro-image-preview",
-        messages: [
-          {
-            role: "user",
-            content: contentParts
-          }
-        ],
-        modalities: ["image", "text"],
-      } as any);
+      // Use raw fetch to ensure modalities parameter is sent correctly
+      const fetchResponse = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${this.config!.openRouterApiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": "https://github.com/Kaden-Schutt/Nano-Banana-OpenRouter-MCP",
+          "X-Title": "Nano-Banana-OpenRouter-MCP",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-3-pro-image-preview",
+          messages: [
+            {
+              role: "user",
+              content: contentParts
+            }
+          ],
+          modalities: ["image", "text"],
+        }),
+      });
+
+      if (!fetchResponse.ok) {
+        const errorText = await fetchResponse.text();
+        throw new Error(`OpenRouter API error: ${fetchResponse.status} - ${errorText}`);
+      }
+
+      const response = await fetchResponse.json() as any;
       
       // Process response
       const content: any[] = [];
