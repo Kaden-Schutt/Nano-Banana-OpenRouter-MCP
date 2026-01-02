@@ -239,33 +239,88 @@ class NanoBananaMCP {
       // Create directory
       await fs.mkdir(imagesDir, { recursive: true, mode: 0o755 });
       
-      // Extract text content from response
+      // Extract content from response
       const message = response.choices?.[0]?.message;
-      if (message?.content && typeof message.content === "string") {
-        textContent = message.content;
+
+      // Debug: log response structure
+      console.error("OpenRouter response message:", JSON.stringify(message, null, 2));
+
+      // Handle text content (can be string or array of content blocks)
+      if (message?.content) {
+        if (typeof message.content === "string") {
+          textContent = message.content;
+        } else if (Array.isArray(message.content)) {
+          // Handle array of content blocks (multimodal response)
+          for (const block of message.content) {
+            if (typeof block === "string") {
+              textContent += block;
+            } else if (block?.type === "text" && block?.text) {
+              textContent += block.text;
+            } else if (block?.type === "image_url" && ((block as any)?.imageUrl?.url || (block as any)?.image_url?.url)) {
+              // Image embedded in content array (handle both camelCase and snake_case)
+              const imageDataUrl = (block as any).imageUrl?.url || (block as any).image_url?.url;
+              const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+              if (match) {
+                const mimeType = match[1];
+                const base64Data = match[2];
+
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const randomId = Math.random().toString(36).substring(2, 8);
+                const ext = mimeType === "image/png" ? "png" : mimeType === "image/jpeg" ? "jpg" : "png";
+                const fileName = `generated-${timestamp}-${randomId}.${ext}`;
+                const filePath = path.join(imagesDir, fileName);
+
+                const imageBuffer = Buffer.from(base64Data, 'base64');
+                await fs.writeFile(filePath, imageBuffer);
+                savedFiles.push(filePath);
+                this.lastImagePath = filePath;
+
+                content.push({
+                  type: "image",
+                  data: base64Data,
+                  mimeType: mimeType,
+                });
+              }
+            }
+          }
+        }
       }
-      
-      // Extract images from response (OpenRouter returns base64 data URLs)
-      const images = (message as any)?.images as string[] | undefined;
+
+      // Also check for separate images field (OpenRouter format)
+      const images = (message as any)?.images as Array<{ type?: string; image_url?: { url?: string }; url?: string } | string> | undefined;
       if (images && images.length > 0) {
-        for (const imageDataUrl of images) {
+        for (const imageItem of images) {
+          // Handle different response formats:
+          // 1. String: "data:image/png;base64,..."
+          // 2. Object: { type: "image_url", image_url: { url: "data:..." } }
+          // 3. Object: { url: "data:..." }
+          let imageDataUrl: string | undefined;
+
+          if (typeof imageItem === "string") {
+            imageDataUrl = imageItem;
+          } else if (typeof imageItem === "object" && imageItem !== null) {
+            imageDataUrl = imageItem.image_url?.url || (imageItem as any).url;
+          }
+
+          if (!imageDataUrl) continue;
+
           // Parse data URL: data:image/png;base64,<data>
           const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
           if (match) {
             const mimeType = match[1];
             const base64Data = match[2];
-            
+
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const randomId = Math.random().toString(36).substring(2, 8);
             const ext = mimeType === "image/png" ? "png" : mimeType === "image/jpeg" ? "jpg" : "png";
             const fileName = `generated-${timestamp}-${randomId}.${ext}`;
             const filePath = path.join(imagesDir, fileName);
-            
+
             const imageBuffer = Buffer.from(base64Data, 'base64');
             await fs.writeFile(filePath, imageBuffer);
             savedFiles.push(filePath);
             this.lastImagePath = filePath;
-            
+
             // Add image to MCP response
             content.push({
               type: "image",
@@ -382,33 +437,85 @@ class NanoBananaMCP {
       const imagesDir = this.getImagesDirectory();
       await fs.mkdir(imagesDir, { recursive: true, mode: 0o755 });
       
-      // Extract text content from response
+      // Extract content from response
       const message = response.choices?.[0]?.message;
-      if (message?.content && typeof message.content === "string") {
-        textContent = message.content;
+
+      // Debug: log response structure
+      console.error("OpenRouter edit response message:", JSON.stringify(message, null, 2));
+
+      // Handle text content (can be string or array of content blocks)
+      if (message?.content) {
+        if (typeof message.content === "string") {
+          textContent = message.content;
+        } else if (Array.isArray(message.content)) {
+          // Handle array of content blocks (multimodal response)
+          for (const block of message.content) {
+            if (typeof block === "string") {
+              textContent += block;
+            } else if (block?.type === "text" && block?.text) {
+              textContent += block.text;
+            } else if (block?.type === "image_url" && ((block as any)?.imageUrl?.url || (block as any)?.image_url?.url)) {
+              // Image embedded in content array (handle both camelCase and snake_case)
+              const imageDataUrl = (block as any).imageUrl?.url || (block as any).image_url?.url;
+              const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
+              if (match) {
+                const imgMimeType = match[1];
+                const base64Data = match[2];
+
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                const randomId = Math.random().toString(36).substring(2, 8);
+                const ext = imgMimeType === "image/png" ? "png" : imgMimeType === "image/jpeg" ? "jpg" : "png";
+                const fileName = `edited-${timestamp}-${randomId}.${ext}`;
+                const filePath = path.join(imagesDir, fileName);
+
+                const imgBuffer = Buffer.from(base64Data, 'base64');
+                await fs.writeFile(filePath, imgBuffer);
+                savedFiles.push(filePath);
+                this.lastImagePath = filePath;
+
+                content.push({
+                  type: "image",
+                  data: base64Data,
+                  mimeType: imgMimeType,
+                });
+              }
+            }
+          }
+        }
       }
-      
-      // Extract images from response (OpenRouter returns base64 data URLs)
-      const images = (message as any)?.images as string[] | undefined;
+
+      // Also check for separate images field (OpenRouter format)
+      const images = (message as any)?.images as Array<{ type?: string; image_url?: { url?: string }; url?: string } | string> | undefined;
       if (images && images.length > 0) {
-        for (const imageDataUrl of images) {
+        for (const imageItem of images) {
+          // Handle different response formats
+          let imageDataUrl: string | undefined;
+
+          if (typeof imageItem === "string") {
+            imageDataUrl = imageItem;
+          } else if (typeof imageItem === "object" && imageItem !== null) {
+            imageDataUrl = imageItem.image_url?.url || (imageItem as any).url;
+          }
+
+          if (!imageDataUrl) continue;
+
           // Parse data URL: data:image/png;base64,<data>
           const match = imageDataUrl.match(/^data:([^;]+);base64,(.+)$/);
           if (match) {
             const imgMimeType = match[1];
             const base64Data = match[2];
-            
+
             const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
             const randomId = Math.random().toString(36).substring(2, 8);
             const ext = imgMimeType === "image/png" ? "png" : imgMimeType === "image/jpeg" ? "jpg" : "png";
             const fileName = `edited-${timestamp}-${randomId}.${ext}`;
             const filePath = path.join(imagesDir, fileName);
-            
+
             const imgBuffer = Buffer.from(base64Data, 'base64');
             await fs.writeFile(filePath, imgBuffer);
             savedFiles.push(filePath);
             this.lastImagePath = filePath;
-            
+
             // Add to MCP response
             content.push({
               type: "image",
@@ -418,7 +525,7 @@ class NanoBananaMCP {
           }
         }
       }
-      
+
       // Build response
       let statusText = `🎨 Image edited with nano-banana (Gemini 3 Pro via OpenRouter)!\n\nOriginal: ${imagePath}\nEdit prompt: "${prompt}"`;
       
